@@ -12,4 +12,4 @@
 
 conda activate comp3710 
 
-python training.py
+time python training.py
