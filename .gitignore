@@ -1,2 +1,3 @@
-classifycifar10/data/cifar-10-python.tar.gz
-classifylfw/data/.*
+classifycifar10/data/
+classifylfw/data/
+classifycifar10/model_weights*
