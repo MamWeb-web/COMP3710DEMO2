@@ -1,3 +1,7 @@
 classifycifar10/data/
-classifylfw/data/
+classifycifar10/slurm_logs/
 classifycifar10/model_weights*
+
+classifylfw/data/
+classifylfw/slurm_logs/
+
