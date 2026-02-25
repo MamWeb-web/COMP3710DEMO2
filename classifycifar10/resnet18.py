@@ -1,0 +1,118 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Type
+
+
+class BasicBlock(nn.Module):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        stride: int = 1,
+        downsample: Optional[nn.Module] = None,
+    ):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.downsample = downsample
+        self.act = torch.nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+
+        out = self.act(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.act(out)
+        return out
+
+
+class ResNet(nn.Module):
+
+    def __init__(
+        self,
+        layers: list[int],
+        num_classes: int = 1000,
+        in_channels: int = 3,
+    ):
+        super().__init__()
+
+        self.conv1 = nn.Conv2d(in_channels, 96, kernel_size=3, stride=2, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(96)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # Layer 1: 96 -> 96, no spatial downsampling
+        self.layer1 = nn.Sequential(*[BasicBlock(96, 96) for _ in range(layers[0])])
+
+        # Layer 2: 96 -> 192, first block halves spatial dims
+        self.layer2 = nn.Sequential(
+            BasicBlock(
+                96,
+                192,
+                stride=2,
+                downsample=nn.Sequential(
+                    nn.Conv2d(96, 192, kernel_size=1, stride=2, bias=False),
+                    nn.BatchNorm2d(192),
+                ),
+            ),
+            *[BasicBlock(192, 192) for _ in range(1, layers[1])]
+        )
+
+        # Layer 3: 192 -> 384, first block halves spatial dims
+        self.layer3 = nn.Sequential(
+            BasicBlock(
+                192,
+                384,
+                stride=2,
+                downsample=nn.Sequential(
+                    nn.Conv2d(192, 384, kernel_size=1, stride=2, bias=False),
+                    nn.BatchNorm2d(384),
+                ),
+            ),
+            *[BasicBlock(384, 384) for _ in range(1, layers[2])]
+        )
+
+        # Layer 4: 384 -> 768, first block halves spatial dims
+        self.layer4 = nn.Sequential(
+            BasicBlock(
+                384,
+                768,
+                stride=2,
+                downsample=nn.Sequential(
+                    nn.Conv2d(384, 768, kernel_size=1, stride=2, bias=False),
+                    nn.BatchNorm2d(768),
+                ),
+            ),
+            *[BasicBlock(768, 768) for _ in range(1, layers[3])]
+        )
+
+        # Classification head
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.dropout = torch.nn.Dropout(0.1)
+        self.fc = nn.Linear(768, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Stem
+        x = F.relu(self.bn1(self.conv1(x)))
+        # x = self.maxpool(x)
+
+        # Residual blocks
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        # Classification head
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.dropout(x)
+        x = self.fc(x)
+        return x

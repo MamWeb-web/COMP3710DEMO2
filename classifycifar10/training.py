@@ -24,6 +24,7 @@ import tarfile
 
 import torch
 from torch.amp import GradScaler
+import torchvision.transforms as T
 
 from tqdm import trange
 
@@ -34,9 +35,10 @@ from sklearn.model_selection import train_test_split
 
 class CIFAR10(torch.utils.data.Dataset):
 
-    def __init__(self, mode, path="data/cifar-10-python.tar.gz"):
+    def __init__(self, mode, transform=None, path="data/cifar-10-python.tar.gz"):
         super().__init__()
 
+        self.transform = transform
         X, y = [], []
         with tarfile.open(path, "r:gz") as tar:
             for member in tar.getmembers():
@@ -64,100 +66,66 @@ class CIFAR10(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         img = self.data[idx]  # shape: (3, 32, 32)
         target = self.target[idx]
+        if self.transform is not None:
+            img = self.transform(img)
         return img, target
-
-
-class ResConv(torch.nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.cnn = torch.nn.Conv2d(
-            in_channels=channels, out_channels=channels, kernel_size=3, stride=1, padding=1, bias=False
-        )
-        self.bn = torch.nn.BatchNorm2d(channels)
-        self.relu = torch.nn.ReLU()
-
-    def forward(self, data):
-        o1 = self.cnn(data)
-        o2 = self.bn(o1)
-        return self.relu(o2) + data
-
-
-class SimpleCNNModel(torch.nn.Module):
-
-    def __init__(self, num_classes):
-        super().__init__()
-        self.body = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=3, out_channels=128, kernel_size=3, stride=1, padding=1, bias=False),
-            ResConv(128),
-            ResConv(128),
-            ResConv(128),
-            ResConv(128),
-            ResConv(128),
-            ResConv(128),
-            ResConv(128),
-            ResConv(128),
-            ResConv(128),
-            ResConv(128),
-            ResConv(128),
-            # torch.nn.AvgPool2d(2, 2),
-            ResConv(128),
-            # ResConv(128),
-            # ResConv(128),
-            # ResConv(128),
-            # ResConv(128),
-            # ResConv(128),
-            # ResConv(128),
-            # ResConv(128),
-        )
-
-        self.pool = torch.nn.AdaptiveAvgPool2d((2, 2))
-        self.down = torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=16, stride=16, padding=0, bias=False)
-        self.dropout = torch.nn.Dropout(0.1)
-        self.relu = torch.nn.ReLU()
-        self.fc1 = torch.nn.Linear(128 * 4, 128)
-        self.fc2 = torch.nn.Linear(128, num_classes)
-
-    def forward(self, data):
-        features = self.body(data)
-        small = (self.pool(features) + self.down(features)) / 2
-
-        o12 = small.reshape(data.shape[0], -1)
-        o12 = self.dropout(o12)
-
-        o13 = self.relu(self.fc1(o12))
-        logits = self.fc2(o13)
-        return logits
 
 
 def main():
     device = torch.device("cuda:0")
     scaler = GradScaler()
-    total_epochs = 100
+    total_epochs = 150
 
-    train_set = CIFAR10(mode="train")
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=128, shuffle=True, num_workers=12, pin_memory=True)
+    # Standard CIFAR-10 augmentation (already tensors, so no ToTensor needed)
+    train_transform = T.Compose(
+        [
+            T.RandomCrop(32, padding=4),
+            T.RandomHorizontalFlip(),
+            T.RandomVerticalFlip(),
+            # Normalize to standard CIFAR-10 channel stats
+            T.Normalize(
+                mean=[0.4914, 0.4822, 0.4465],
+                std=[0.2470, 0.2435, 0.2616],
+            ),
+        ]
+    )
 
-    val_set = CIFAR10(mode="val")
-    val_loader = torch.utils.data.DataLoader(val_set, batch_size=128, shuffle=True, num_workers=12, pin_memory=True)
+    val_transform = T.Compose(
+        [
+            T.Normalize(
+                mean=[0.4914, 0.4822, 0.4465],
+                std=[0.2470, 0.2435, 0.2616],
+            ),
+        ]
+    )
 
-    model = SimpleCNNModel(num_classes=10).to(device)
-    # model = torch.compile(model)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, total_epochs)
-    loss_function = torch.nn.CrossEntropyLoss()
+    train_set = CIFAR10(mode="train", transform=train_transform)
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=512, shuffle=True, num_workers=12, pin_memory=True)
+
+    val_set = CIFAR10(mode="val", transform=val_transform)
+    val_loader = torch.utils.data.DataLoader(val_set, batch_size=512, shuffle=True, num_workers=12, pin_memory=True)
+
+    from resnet18 import ResNet
+
+    model = ResNet([4, 6, 8, 6], num_classes=10)
+    model = torch.compile(model).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-3, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=1e-5)
+
+    loss_function = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
     # ?accuracy
     max_epoch_acc = 0
     table = []
 
     tbar = trange(total_epochs, ncols=80)
-    # for current_epoch in range(total_epochs):
     for current_epoch in tbar:
         model.train()
         countLoss = 0
         totalLoss = 0
-        for data, target in train_loader:  # validation loader
+        for data, target in train_loader:
 
-            data, target = data.half().to(device), target.to(device)
+            data, target = data.to(device), target.to(device)
             with torch.autocast(device_type="cuda", dtype=torch.float16):
                 pred = model(data)
                 loss = loss_function(pred, target)
@@ -166,16 +134,14 @@ def main():
             totalLoss += loss.item()
 
             scaler.scale(loss).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             scaler.step(optimizer)
             scaler.update()
 
-            # loss.backward()
-            # optimizer.step()
-
             optimizer.zero_grad()
         avgLoss = totalLoss / countLoss
-        scheduler.step()
+
+        if current_epoch < 100:
+            scheduler.step()
 
         # validate
         # 1. validation loader that is not equal to train loader
@@ -184,10 +150,9 @@ def main():
         totalAccuracy = 0
 
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16):
-            # with torch.no_grad():
             for data, target in val_loader:
                 total = 0
-                data = data.half().to(device)  # move data to device
+                data = data.to(device)  # move data to device
                 target = target.to(device)
                 pred = model(data)
                 # accuracy
