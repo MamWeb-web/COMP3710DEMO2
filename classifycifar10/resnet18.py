@@ -45,59 +45,59 @@ class ResNet(nn.Module):
     ):
         super().__init__()
 
-        self.conv1 = nn.Conv2d(in_channels, 96, kernel_size=3, stride=2, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(96)
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        # Layer 1: 96 -> 96, no spatial downsampling
-        self.layer1 = nn.Sequential(*[BasicBlock(96, 96) for _ in range(layers[0])])
+        # Layer 1: 64 -> 64, no spatial downsampling
+        self.layer1 = nn.Sequential(*[BasicBlock(64, 64) for _ in range(layers[0])])
 
-        # Layer 2: 96 -> 192, first block halves spatial dims
+        # Layer 2: 64 -> 128, first block halves spatial dims
         self.layer2 = nn.Sequential(
             BasicBlock(
-                96,
-                192,
+                64,
+                128,
                 stride=2,
                 downsample=nn.Sequential(
-                    nn.Conv2d(96, 192, kernel_size=1, stride=2, bias=False),
-                    nn.BatchNorm2d(192),
+                    nn.Conv2d(64, 128, kernel_size=1, stride=2, bias=False),
+                    nn.BatchNorm2d(128),
                 ),
             ),
-            *[BasicBlock(192, 192) for _ in range(1, layers[1])]
+            *[BasicBlock(128, 128) for _ in range(1, layers[1])]
         )
 
-        # Layer 3: 192 -> 384, first block halves spatial dims
+        # Layer 3: 128 -> 256, first block halves spatial dims
         self.layer3 = nn.Sequential(
             BasicBlock(
-                192,
-                384,
+                128,
+                256,
                 stride=2,
                 downsample=nn.Sequential(
-                    nn.Conv2d(192, 384, kernel_size=1, stride=2, bias=False),
-                    nn.BatchNorm2d(384),
+                    nn.Conv2d(128, 256, kernel_size=1, stride=2, bias=False),
+                    nn.BatchNorm2d(256),
                 ),
             ),
-            *[BasicBlock(384, 384) for _ in range(1, layers[2])]
+            *[BasicBlock(256, 256) for _ in range(1, layers[2])]
         )
 
-        # Layer 4: 384 -> 768, first block halves spatial dims
+        # Layer 4: 256 -> 512, first block halves spatial dims
         self.layer4 = nn.Sequential(
             BasicBlock(
-                384,
-                768,
+                256,
+                512,
                 stride=2,
                 downsample=nn.Sequential(
-                    nn.Conv2d(384, 768, kernel_size=1, stride=2, bias=False),
-                    nn.BatchNorm2d(768),
+                    nn.Conv2d(256, 512, kernel_size=1, stride=2, bias=False),
+                    nn.BatchNorm2d(512),
                 ),
             ),
-            *[BasicBlock(768, 768) for _ in range(1, layers[3])]
+            *[BasicBlock(512, 512) for _ in range(1, layers[3])]
         )
 
         # Classification head
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.dropout = torch.nn.Dropout(0.1)
-        self.fc = nn.Linear(768, num_classes)
+        self.fc = nn.Linear(512, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Stem

@@ -1,0 +1,37 @@
+
+
+Data: 
+    -> split 
+    -> augment shift-invariant [rotation, translation(padded-crop), horizontalflip]
+
+optimizer 
+    -> Adam 
+
+Learning Rate 
+    -> 5e-3 
+    -> 5*10^-3
+    -> 1e-3 -> 1e-4
+    learning rate scheduler. 
+
+grad_scaler = torch.cuda.amp.GradScaler() 
+
+for epoch in range(total_epochs):
+    for data, target in trainloader: 
+
+        with torch.autocast():
+            pred = model(data)
+            loss = CE(pred, target)
+
+        optimizer.zero_grad() 
+        grad_scaler.scale(loss).backward() 
+        grad_scaler.step(optimizer) 
+    lr_scheduler.step()
+
+    for data, target in valloader: 
+        pred = model(data)
+        batch_acc = accuracy(pred, target)
+    avg_acc = sum(batch_acc) / len(valloader)
+
+
+best accuracy? 
+best accuracy -> model weights 

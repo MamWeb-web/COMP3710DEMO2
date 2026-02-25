@@ -30,7 +30,6 @@ from tqdm import trange
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
 
 class CIFAR10(torch.utils.data.Dataset):
@@ -39,26 +38,25 @@ class CIFAR10(torch.utils.data.Dataset):
         super().__init__()
 
         self.transform = transform
-        X, y = [], []
+        x, y = [], []
         with tarfile.open(path, "r:gz") as tar:
             for member in tar.getmembers():
-                if "data_batch" in member.name or "test_batch" in member.name:
+                if mode == "train" and "data_batch" in member.name:
                     f = tar.extractfile(member)
                     batch = pickle.load(f, encoding="bytes")
-                    X.append(batch[b"data"])
+                    x.append(batch[b"data"])
+                    y.append(batch[b"labels"])
+                elif mode == "val" and "test_batch" in member.name:
+                    f = tar.extractfile(member)
+                    batch = pickle.load(f, encoding="bytes")
+                    x.append(batch[b"data"])
                     y.append(batch[b"labels"])
 
-        X = np.concatenate(X).reshape(-1, 3, 32, 32).astype(np.float32) / 255.0
+        x = np.concatenate(x).reshape(-1, 3, 32, 32).astype(np.float32) / 255.0
         y = np.concatenate(y)
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
-
-        if mode == "train":
-            self.data = torch.from_numpy(X_train)
-            self.target = torch.from_numpy(y_train).long()
-        else:
-            self.data = torch.from_numpy(X_test)
-            self.target = torch.from_numpy(y_test).long()
+        self.data = torch.from_numpy(x)
+        self.target = torch.from_numpy(y).long()
 
     def __len__(self):
         return self.data.shape[0]
@@ -74,15 +72,16 @@ class CIFAR10(torch.utils.data.Dataset):
 def main():
     device = torch.device("cuda:0")
     scaler = GradScaler()
-    total_epochs = 150
+    total_epochs = 100
 
     # Standard CIFAR-10 augmentation (already tensors, so no ToTensor needed)
     train_transform = T.Compose(
         [
+            # 32 x 32 image -> 36 x 36 image -> 32 x 32 image 
             T.RandomCrop(32, padding=4),
             T.RandomHorizontalFlip(),
-            T.RandomVerticalFlip(),
             # Normalize to standard CIFAR-10 channel stats
+            # 0->1 range, z-score normalize to unit distance
             T.Normalize(
                 mean=[0.4914, 0.4822, 0.4465],
                 std=[0.2470, 0.2435, 0.2616],
@@ -101,19 +100,20 @@ def main():
 
     train_set = CIFAR10(mode="train", transform=train_transform)
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=512, shuffle=True, num_workers=12, pin_memory=True)
+    print(f"train size: {len(train_set)}")
 
     val_set = CIFAR10(mode="val", transform=val_transform)
     val_loader = torch.utils.data.DataLoader(val_set, batch_size=512, shuffle=True, num_workers=12, pin_memory=True)
+    print(f"val size: {len(val_set)}")
 
     from resnet18 import ResNet
 
-    model = ResNet([4, 6, 8, 6], num_classes=10)
-    model = torch.compile(model).to(device)
+    model = ResNet([4, 6, 8, 6], num_classes=10).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-3, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 100, eta_min=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, total_epochs, eta_min=1e-5)
 
-    loss_function = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
+    loss_function = torch.nn.CrossEntropyLoss()
     # ?accuracy
     max_epoch_acc = 0
     table = []
@@ -124,7 +124,6 @@ def main():
         countLoss = 0
         totalLoss = 0
         for data, target in train_loader:
-
             data, target = data.to(device), target.to(device)
             with torch.autocast(device_type="cuda", dtype=torch.float16):
                 pred = model(data)
@@ -140,8 +139,7 @@ def main():
             optimizer.zero_grad()
         avgLoss = totalLoss / countLoss
 
-        if current_epoch < 100:
-            scheduler.step()
+        scheduler.step()
 
         # validate
         # 1. validation loader that is not equal to train loader
@@ -164,8 +162,8 @@ def main():
                 # accuracy for each batch
                 # count (# of batchs)
                 totalAccuracy += accuracy
-            avgAccuracy = totalAccuracy / countBatch
-
+        
+        avgAccuracy = totalAccuracy / countBatch
         # save avg accuracy to csv and update file
         # save
         table.append((current_epoch, float(avgLoss), float(avgAccuracy)))
